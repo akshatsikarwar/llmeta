@@ -1,0 +1,65 @@
+#!/opt/bb/bin/bash
+
+if [[ ! -x cdb2_dump ]]; then
+    cp /bb/bin/comdb22.tsk cdb2_dump
+    cp /bb/bin/comdb22.tsk cdb2_load
+fi
+
+btree='comdb2_llmeta.dta'
+txt='comdb2_llmeta.txt'
+kv='comdb2_llmeta.kv.txt'
+new_txt='comdb2_llmeta.new.txt'
+new_btree="new.$btree"
+
+./cdb2_dump $btree > $txt
+egrep -v 'VERSION|format|type|chksum|db_pagesize|HEADER|DATA' < $txt | paste -sd ' \n' >  $kv
+egrep 'VERSION|format|type|chksum|db_pagesize|HEADER' < $txt > $new_txt
+
+zeros=$(printf '00%.0s' {1..116}) #pad with 116 '00' (LLMETA_IXLEN - sizeof(int))
+tbl_list="00000003${zeros}" #key for list of all tables
+
+drop=$1 #table to drop
+drop_len=${#drop} #strlen(drop)
+drop_hex="$(echo -n $drop | xxd -p)00" #null terminated tbl-name in hex
+sfx_len=${#drop_hex}
+
+while read -a entry; do
+    key=${entry[0]}
+    val=${entry[1]}
+
+    key_pfx=${key:0:8} #leading integer from key
+    key_sfx=${key:8:$sfx_len} #key without leading integer, up to drop table name
+
+    if [[ $key == $tbl_list ]]; then
+        echo " $key" >> $new_txt
+        echo -n " " >> $new_txt
+        while [[ ${#val} -gt 0 ]]; do
+            tbl=''
+            while [[ ${val:0:2} != '00' ]]; do
+                tbl=${tbl}${val:0:2}
+                t=$(xxd -r -p <<< "$tbl")
+                val=${val:2}
+            done
+            val=${val:2} #null-byte
+            dbnum=${val:0:8}
+            val=${val:8}
+            t=$(xxd -r -p <<< "$tbl")
+            if [[ $t != $drop ]]; then
+                echo "Adding tbl:$t dbnum:${dbnum}"
+                echo -n "${tbl}00${dbnum}" >> $new_txt
+            else
+                echo "Skipping tbl:$t dbnum:${dbnum}"
+            fi
+        done
+        echo "" >> $new_txt
+    elif [[ $drop_len -gt 0 ]] && [[ $key_sfx == $drop_hex ]]; then
+        echo Skipping key:$key_pfx for tbl:$drop
+    else
+        echo " $key" >> $new_txt
+        echo " $val" >> $new_txt
+    fi
+done < $kv
+echo 'DATA=END' >> $new_txt
+
+echo Generating $new_btree
+./cdb2_load -f $new_txt $new_btree
