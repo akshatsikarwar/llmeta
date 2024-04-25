@@ -1,4 +1,4 @@
-#!/opt/bb/bin/bash
+#!/usr/bin/env bash
 
 if [[ ! -x cdb2_dump ]]; then
     cp /bb/bin/comdb22.tsk cdb2_dump
